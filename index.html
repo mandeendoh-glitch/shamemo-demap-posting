@@ -661,6 +661,7 @@ function loadMap(){
     if(photos.length>0)plotAll();
     loadProhibitedMarkersMaster();
     renderProhibitedMarkersOnMap();
+    restoreKmlAreasFromStorage();
   };
   const s=document.createElement('script');s.id='_gm';
   s.src=`https://maps.googleapis.com/maps/api/js?key=${API_KEY}&libraries=geometry&callback=initMap`;
@@ -1248,6 +1249,79 @@ async function handleKML(file){
   showToast(`KML読込完了（${parts.join('／')||'0件'}）`,'ok');
   loadProhibitedMarkersMaster();
   renderProhibitedMarkersOnMap();
+  saveKmlAreasToStorage();
+}
+
+// ── 境界データ（KML）・世帯データ（Excel/CSV）の自動保存・自動復元 ──
+// 「エリアデータは受注案件から独立した共通データ」という設計方針に基づき、
+// 個々のプロジェクト保存とは別枠で、常にブラウザに保持し次回起動時にも自動で復元する。
+function saveKmlAreasToStorage(){
+  const serialized=kmlAreas.map(a=>{
+    const paths=[];
+    a.polygon.getPaths().forEach(p=>{const arr=[];p.forEach(pt=>arr.push([pt.lat(),pt.lng()]));paths.push(arr);});
+    return{keyCode:a.keyCode,name:a.name,cityName:a.cityName,jinko:a.jinko,setai:a.setai,paths};
+  });
+  try{localStorage.setItem('fgm_kml_areas',JSON.stringify(serialized));}catch(e){console.error('KMLエリアの保存に失敗',e);}
+}
+function saveAreaExcelDataToStorage(){
+  try{
+    localStorage.setItem('fgm_area_excel_data',JSON.stringify(areaExcelData||null));
+    localStorage.setItem('fgm_area_excel_label',areaExcelLabel||'');
+  }catch(e){console.error('世帯データの保存に失敗',e);}
+}
+function restoreKmlAreasFromStorage(){
+  if(!map)return;
+  let serialized;
+  try{serialized=JSON.parse(localStorage.getItem('fgm_kml_areas')||'null');}catch(e){serialized=null;}
+  if(!serialized||!serialized.length)return;
+
+  try{areaExcelData=JSON.parse(localStorage.getItem('fgm_area_excel_data')||'null');}catch(e){areaExcelData=null;}
+  areaExcelLabel=localStorage.getItem('fgm_area_excel_label')||'';
+
+  kmlAreas.forEach(a=>{a.polygon?.setMap(null);a.label?.setMap(null);a.iw?.close();});
+  kmlAreas=[];
+
+  serialized.forEach(a=>{
+    const paths=a.paths.map(ring=>ring.map(([lat,lng])=>({lat,lng})));
+    const exData=lookupExcelArea(a.keyCode);
+    const colorBasis=exData?.total??a.setai;
+    const color=getAreaColor(colorBasis);
+    const polygon=new google.maps.Polygon({
+      paths,map:layers.boundary?map:null,
+      strokeColor:'#8080FF',strokeOpacity:.9,strokeWeight:1.5,
+      fillColor:color,fillOpacity:.45,zIndex:2
+    });
+    const area={keyCode:a.keyCode,name:a.name,cityName:a.cityName,jinko:a.jinko,setai:a.setai,color,polygon,iw:null,label:null};
+    const iw=new google.maps.InfoWindow({content:buildAreaInfoContent(area)});
+    area.iw=iw;
+    const centroid=computeCentroid(paths[0]);
+    const label=new google.maps.Marker({
+      position:centroid,map:layers.boundary?map:null,zIndex:3,
+      icon:{path:google.maps.SymbolPath.CIRCLE,scale:0,fillOpacity:0,strokeOpacity:0},
+      label:{text:colorBasis!=null?String(colorBasis):'—',color:'#1A1E26',fontSize:'12px',fontWeight:'800'}
+    });
+    area.label=label;
+    polygon.addListener('click',(e)=>{
+      if(document.getElementById('order-modal').classList.contains('show')&&currentOrderId&&orders[currentOrderId]){
+        const o=orders[currentOrderId];
+        const nowChecked=!(o.areaKeyCodes||[]).includes(area.keyCode);
+        toggleOrderArea(area.keyCode,nowChecked);
+        renderOrderAreaList();
+        showToast(`${area.name}を${nowChecked?'対象に追加':'対象から除外'}しました`);
+        return;
+      }
+      if(activeIW)activeIW.close();
+      iw.setPosition(e.latLng);
+      iw.open(map);
+      activeIW=iw;
+    });
+    label.addListener('click',()=>google.maps.event.trigger(polygon,'click',{latLng:label.getPosition()}));
+    kmlAreas.push(area);
+  });
+
+  loadProhibitedMarkersMaster();
+  renderProhibitedMarkersOnMap();
+  showToast(`前回の境界データを復元しました（${kmlAreas.length}区画）`,'ok');
 }
 
 // 境界ポリゴンにExcel世帯データを反映（色の塗り直し・開いているInfoWindowの更新）
@@ -1392,6 +1466,7 @@ async function _doHandleAreaCsv(file){
     areaExcelData=data;
     areaExcelLabel=file.name;
     refreshAreaColorsAndInfo();
+    saveAreaExcelDataToStorage();
     const matched=kmlAreas.filter(a=>lookupExcelArea(a.keyCode)).length;
     showToast(`CSV読込完了（${count}件／境界${matched}件と一致）`,'ok');
   }catch(err){
@@ -1437,6 +1512,7 @@ async function _doHandleAreaExcel(file){
     areaExcelData=data;
     areaExcelLabel=file.name;
     refreshAreaColorsAndInfo();
+    saveAreaExcelDataToStorage();
     const matched=kmlAreas.filter(a=>lookupExcelArea(a.keyCode)).length;
     showToast(`Excel読込完了（${count}件／境界${matched}件と一致）`,'ok');
   }catch(err){

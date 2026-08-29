@@ -1157,8 +1157,9 @@ async function handleKML(file){
     text=await file.text();
   }
   const doc=new DOMParser().parseFromString(text,'text/xml');
+  // 複数の区・市のKMLを順番に読み込んでも、既存の境界データを消さずに積み上げられるようにする
+  // （同じ町丁目コードが再度読み込まれた場合のみ、その区画を新しいデータで置き換える）
   kmlMarkers.forEach(m=>{m.marker?.setMap(null);m.iw?.close();});kmlMarkers=[];
-  kmlAreas.forEach(a=>{a.polygon?.setMap(null);a.iw?.close();});kmlAreas=[];
 
   doc.querySelectorAll('Placemark').forEach(pm=>{
     const polygonEls=pm.querySelectorAll('Polygon');
@@ -1182,6 +1183,15 @@ async function handleKML(file){
       // PREF+CITY+S_AREAから再構成した値を優先し、無ければ元のKEY_CODEを使う
       const rebuiltKeyCode=(ext.PREF&&ext.CITY&&ext.S_AREA)?(ext.PREF+ext.CITY.padStart(3,'0')+ext.S_AREA.padStart(6,'0')):'';
       const keyCode=(rebuiltKeyCode&&rebuiltKeyCode.length===11)?rebuiltKeyCode:(ext.KEY_CODE||'');
+
+      // 同じ町丁目コードが既に読み込まれていれば、その古いデータだけを消して新しいものに置き換える
+      const existingIdx=kmlAreas.findIndex(a=>a.keyCode===keyCode);
+      if(existingIdx>=0){
+        const old=kmlAreas[existingIdx];
+        old.polygon?.setMap(null);old.label?.setMap(null);old.iw?.close();
+        kmlAreas.splice(existingIdx,1);
+      }
+
       const name=ext.S_NAME||pm.querySelector('n,name')?.textContent||'（名称不明）';
       const cityName=[ext.PREF_NAME,ext.CITY_NAME].filter(Boolean).join('');
       const jinko=ext.JINKO!==undefined&&ext.JINKO!==''?Number(ext.JINKO):null;

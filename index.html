@@ -918,6 +918,7 @@ async function loadSelectedProjects(){
   if(!checked.length){showToast('プロジェクトを選択してください','err');return;}
   closeProjectModal();
   await loadMap();
+  const beforeCount=photos.length;
   let totalLoaded=0,totalExpected=0;
   for(const id of checked){
     const res=await loadProjectById(id);
@@ -925,7 +926,13 @@ async function loadSelectedProjects(){
   }
   updateStats();renderList();renderLoadedProjectsSidebar();
   plotAll();
-  showToast(`${checked.length}件のプロジェクトを読み込みました（写真 ${totalLoaded}/${totalExpected}枚）`,'ok');
+  const newlyLoaded=photos.slice(beforeCount);
+  const hasGps=newlyLoaded.some(p=>p.exif?.lat);
+  if(newlyLoaded.length>0&&!hasGps){
+    showToast(`${checked.length}件読み込みました（写真 ${totalLoaded}/${totalExpected}枚／位置情報付きの写真が無いため地図は移動しません）`,'ok');
+  }else{
+    showToast(`${checked.length}件のプロジェクトを読み込みました（写真 ${totalLoaded}/${totalExpected}枚）`,'ok');
+  }
 }
 
 // 現在地図上に読み込まれているプロジェクトの一覧（表示ON/OFF管理用）
@@ -1625,6 +1632,21 @@ function selectOrder(id){
   renderOrderAchievementSummary();
   renderOrderList();
   refreshAllAreaMapStyles();
+  fitMapToOrderAreas(o);
+}
+
+// 受注案件は「配布計画」の段階（＝まだ写真が1枚も無い状態）から始まるため、
+// 写真の位置情報ではなく、案件に選択済みのエリアの境界そのものを手がかりに地図を移動させる
+function fitMapToOrderAreas(o){
+  if(!map||!o||!(o.areaKeyCodes||[]).length)return;
+  const bounds=new google.maps.LatLngBounds();
+  let any=false;
+  o.areaKeyCodes.forEach(keyCode=>{
+    const area=kmlAreas.find(a=>a.keyCode===keyCode);
+    if(!area)return;
+    area.polygon.getPaths().forEach(path=>path.forEach(pt=>{bounds.extend(pt);any=true;}));
+  });
+  if(any)map.fitBounds(bounds,{padding:60});
 }
 
 function saveCurrentOrderMeta(){

@@ -1173,13 +1173,17 @@ function ensureExcelJS(cb){
 
 async function handleAreaExcel(file){
   if(!file)return;
-  const isCsv=/\.csv$/i.test(file.name);
-  if(isCsv){
-    showToast('CSV読込中...','ok');
-    _doHandleAreaCsv(file);
-  }else{
+  // 拡張子だけに頼らず、ファイル先頭のバイト列（マジックナンバー）で実体を判定する。
+  // e-Statのダウンロードでは「拡張子は.xlsだが中身はCSV(テキスト)」というファイルが実際にあるため。
+  // 正規のxlsx/xls(いずれもZIPまたはOLE複合文書形式)は先頭が 'PK'(0x50,0x4B) または OLEシグネチャで始まる。
+  const head=new Uint8Array(await file.slice(0,4).arrayBuffer());
+  const isRealZipOrOle=(head[0]===0x50&&head[1]===0x4B)||(head[0]===0xD0&&head[1]===0xCF);
+  if(isRealZipOrOle){
     showToast('Excel読込中...','ok');
     ensureExcelJS(()=>_doHandleAreaExcel(file));
+  }else{
+    showToast('データ読込中...','ok');
+    _doHandleAreaCsv(file); // 拡張子が.xls/.xlsxでも、中身がテキストならCSVとして解析する
   }
 }
 

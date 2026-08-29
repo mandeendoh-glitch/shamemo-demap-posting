@@ -113,6 +113,10 @@
   .list-memo .memo-text{font-size:11px;color:var(--text);line-height:1.4;}
   .list-memo .memo-time{font-size:9px;color:var(--dim);margin-top:2px;}
   #project-modal,#settings-modal,#help-modal,#maplist-modal,#xlsxchoice-modal,#order-modal,#prohibited-add-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center;}
+  /* 受注案件モーダルは、開いている間もマップをクリックしてエリアを選べるようにするため、
+     背景オーバーレイのクリックを透過させ、パネル本体にだけクリックを効かせる（右側に寄せて表示） */
+  #order-modal{background:transparent;pointer-events:none;justify-content:flex-end;align-items:flex-start;padding:16px;}
+  #order-modal .modal-box{pointer-events:auto;box-shadow:0 8px 30px rgba(0,0,0,.35);}
   #project-modal.show,#settings-modal.show,#help-modal.show,#maplist-modal.show,#xlsxchoice-modal.show,#order-modal.show,#prohibited-add-modal.show{display:flex;}
   .modal-box{background:white;border-radius:14px;padding:22px;width:360px;box-shadow:0 12px 40px rgba(26,30,38,.18);max-height:80vh;overflow-y:auto;}
   .modal-box h3{font-size:14px;font-weight:700;color:var(--text);margin-bottom:16px;}
@@ -965,6 +969,11 @@ function parseKmlLinearRing(text){
     return {lat,lng};
   }).filter(p=>!isNaN(p.lat)&&!isNaN(p.lng));
 }
+function computeCentroid(path){
+  let lat=0,lng=0;
+  path.forEach(p=>{lat+=p.lat;lng+=p.lng;});
+  return {lat:lat/path.length,lng:lng/path.length};
+}
 
 // PlacemarkのExtendedData/SchemaData/SimpleDataを{name:value}のオブジェクトに変換
 function extractExtendedData(pm){
@@ -1111,15 +1120,36 @@ async function handleKML(file){
         zIndex:2
       });
 
-      const area={keyCode,name,cityName,jinko,setai,color,polygon,iw:null};
+      const area={keyCode,name,cityName,jinko,setai,color,polygon,iw:null,label:null};
       const iw=new google.maps.InfoWindow({content:buildAreaInfoContent(area)});
       area.iw=iw;
+
+      // マップ上に常時、世帯数（受注案件編集中はその案件の計画枚数）を数字で表示する
+      const centroid=computeCentroid(paths[0]);
+      const label=new google.maps.Marker({
+        position:centroid, map:layers.boundary?map:null, zIndex:3,
+        icon:{path:google.maps.SymbolPath.CIRCLE,scale:0,fillOpacity:0,strokeOpacity:0},
+        label:{text:colorBasis!=null?String(colorBasis):'—',color:'#1A1E26',fontSize:'12px',fontWeight:'800'}
+      });
+      area.label=label;
+
       polygon.addListener('click',(e)=>{
+        // 受注案件・配布計画モーダルを開いている間は、マップのエリアをクリックすることで
+        // 対象エリアの選択/解除ができる（地理感がなくても地図を見ながら選べるようにするため）
+        if(document.getElementById('order-modal').classList.contains('show')&&currentOrderId&&orders[currentOrderId]){
+          const o=orders[currentOrderId];
+          const nowChecked=!(o.areaKeyCodes||[]).includes(area.keyCode);
+          toggleOrderArea(area.keyCode,nowChecked);
+          renderOrderAreaList();
+          showToast(`${area.name}を${nowChecked?'対象に追加':'対象から除外'}しました`);
+          return;
+        }
         if(activeIW)activeIW.close();
         iw.setPosition(e.latLng);
         iw.open(map);
         activeIW=iw;
       });
+      label.addListener('click',()=>google.maps.event.trigger(polygon,'click',{latLng:label.getPosition()}));
       kmlAreas.push(area);
     }else{
       // 従来型：管理点（Point）
@@ -1159,6 +1189,7 @@ function refreshAreaColorsAndInfo(){
     area.polygon.setOptions({fillColor:area.color});
     area.iw.setContent(buildAreaInfoContent(area));
   });
+  refreshAllAreaMapStyles();
 }
 
 // ── Excel（e-Stat「住宅の建て方別世帯数」等）読み込み・KEY_CODEでの境界データ連携 ──
@@ -1363,8 +1394,12 @@ function openOrderModal(){
   document.getElementById('order-modal').classList.add('show');
   if(currentOrderId&&orders[currentOrderId])selectOrder(currentOrderId);
   else document.getElementById('order-detail').style.display='none';
+  refreshAllAreaMapStyles();
 }
-function closeOrderModal(){document.getElementById('order-modal').classList.remove('show');}
+function closeOrderModal(){
+  document.getElementById('order-modal').classList.remove('show');
+  refreshAllAreaMapStyles();
+}
 
 function renderOrderList(){
   const list=document.getElementById('order-list');
@@ -1424,6 +1459,7 @@ function selectOrder(id){
   renderOrderAreaList();
   renderOrderAchievementSummary();
   renderOrderList();
+  refreshAllAreaMapStyles();
 }
 
 function saveCurrentOrderMeta(){
@@ -1459,6 +1495,33 @@ function renderOrderAreaList(){
     </div>`;
   }).join('');
 }
+// 受注案件・配布計画モーダルの状態に応じて、マップ上のポリゴンの枠線と数字ラベルを切り替える
+// （モーダルを開いている間：選択中エリアは緑枠＋計画枚数を表示／未選択は薄いグレー数字で世帯数を表示。
+//   モーダルを閉じている間：通常表示に戻し、世帯数を常時表示する）
+function styleAreaForOrder(area){
+  const orderModalOpen=document.getElementById('order-modal').classList.contains('show');
+  const o=orders[currentOrderId];
+  const selected=orderModalOpen&&o&&(o.areaKeyCodes||[]).includes(area.keyCode);
+  if(orderModalOpen&&o){
+    if(selected){
+      area.polygon.setOptions({strokeColor:'#1A8040',strokeWeight:3,fillOpacity:.55});
+      const count=o.plannedCounts?.[area.keyCode] ?? defaultPlannedCount(area);
+      area.label.setLabel({text:String(count),color:'#1A8040',fontSize:'13px',fontWeight:'800'});
+    }else{
+      area.polygon.setOptions({strokeColor:'#8080FF',strokeWeight:1.5,fillOpacity:.22});
+      const basis=lookupExcelArea(area.keyCode)?.total ?? area.setai;
+      area.label.setLabel({text:basis!=null?String(basis):'—',color:'#6A7888',fontSize:'11px',fontWeight:'700'});
+    }
+  }else{
+    area.polygon.setOptions({strokeColor:'#8080FF',strokeWeight:1.5,fillOpacity:.45});
+    const basis=lookupExcelArea(area.keyCode)?.total ?? area.setai;
+    area.label.setLabel({text:basis!=null?String(basis):'—',color:'#1A1E26',fontSize:'12px',fontWeight:'800'});
+  }
+}
+function refreshAllAreaMapStyles(){
+  kmlAreas.forEach(styleAreaForOrder);
+}
+
 function toggleOrderArea(keyCode,checked){
   const o=orders[currentOrderId];
   o.areaKeyCodes=o.areaKeyCodes||[];
@@ -1473,11 +1536,15 @@ function toggleOrderArea(keyCode,checked){
   }
   saveOrders();
   renderOrderList();
+  const area=kmlAreas.find(a=>a.keyCode===keyCode);
+  if(area)styleAreaForOrder(area);
 }
 function updateOrderPlannedCount(keyCode,value){
   const o=orders[currentOrderId];
   o.plannedCounts[keyCode]=Number(value)||0;
   saveOrders();
+  const area=kmlAreas.find(a=>a.keyCode===keyCode);
+  if(area)styleAreaForOrder(area);
 }
 
 function renderOrderAchievementSummary(){

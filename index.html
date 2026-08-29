@@ -159,7 +159,7 @@
       </button>
       <input type="file" id="photoInput" multiple accept="image/jpeg,image/jpg" style="display:none" onchange="handlePhotos(this.files)"/>
       <input type="file" id="kmlInput" accept=".kml,.kmz" style="display:none" onchange="handleKML(this.files[0])"/>
-      <input type="file" id="areaExcelInput" accept=".xlsx,.xls" style="display:none" onchange="handleAreaExcel(this.files[0])"/>
+      <input type="file" id="areaExcelInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleAreaExcel(this.files[0])"/>
       <input type="file" id="achievementImportInput" accept=".json" style="display:none" onchange="handleImportAchievement(this.files[0])"/>
     </div>
     <!-- ▼テスト版ラベル（正式リリース時はこのdiv1つを削除するだけでOK） -->
@@ -1089,7 +1089,10 @@ async function handleKML(file){
       if(!paths.length)return;
 
       const ext=extractExtendedData(pm);
-      const keyCode=ext.KEY_CODE||'';
+      // KEY_CODEは数値扱いされ末尾ゼロが欠落することがある（例:「福富町西通」等）ため、
+      // PREF+CITY+S_AREAから再構成した値を優先し、無ければ元のKEY_CODEを使う
+      const rebuiltKeyCode=(ext.PREF&&ext.CITY&&ext.S_AREA)?(ext.PREF+ext.CITY.padStart(3,'0')+ext.S_AREA.padStart(6,'0')):'';
+      const keyCode=(rebuiltKeyCode&&rebuiltKeyCode.length===11)?rebuiltKeyCode:(ext.KEY_CODE||'');
       const name=ext.S_NAME||pm.querySelector('n,name')?.textContent||'（名称不明）';
       const cityName=[ext.PREF_NAME,ext.CITY_NAME].filter(Boolean).join('');
       const jinko=ext.JINKO!==undefined&&ext.JINKO!==''?Number(ext.JINKO):null;
@@ -1170,8 +1173,126 @@ function ensureExcelJS(cb){
 
 async function handleAreaExcel(file){
   if(!file)return;
-  showToast('Excel読込中...','ok');
-  ensureExcelJS(()=>_doHandleAreaExcel(file));
+  const isCsv=/\.csv$/i.test(file.name);
+  if(isCsv){
+    showToast('CSV読込中...','ok');
+    _doHandleAreaCsv(file);
+  }else{
+    showToast('Excel読込中...','ok');
+    ensureExcelJS(()=>_doHandleAreaExcel(file));
+  }
+}
+
+// 見出し文字列から列番号を特定（列順・表記ゆれが変わっても対応できるよう名前で探索。共通ロジック）
+function buildAreaColumnFinder(headerRow){
+  return (labelList)=>{
+    for(let i=0;i<headerRow.length;i++){
+      const v=headerRow[i];
+      if(v&&labelList.some(l=>v.includes(l)))return i;
+    }
+    return -1;
+  };
+}
+// 小地域コードは「必ず文字列」として扱う。数値化されてゼロ落ちしている場合は11桁ゼロ埋めで復元する
+function normalizeAreaCode(v){
+  if(v===undefined||v===null||v==='')return '';
+  let s=String(v).trim();
+  if(/^\d+$/.test(s)&&s.length<11)s=s.padStart(11,'0');
+  return s;
+}
+function toNumOrNull(v){
+  if(v===undefined||v===null||v==='')return null;
+  const n=Number(String(v).replace(/,/g,''));
+  return isNaN(n)?null:n;
+}
+// 抽出した列インデックス群から areaExcelData 形式のレコード1件を作る（Excel/CSV共通）
+function buildAreaRecord(row,cols){
+  return {
+    total:toNumOrNull(row[cols.cTotal]), detached:toNumOrNull(row[cols.cDetached]), row:toNumOrNull(row[cols.cRow]),
+    apartment:toNumOrNull(row[cols.cApt]), apt1_2:toNumOrNull(row[cols.cApt1_2]), apt3_5:toNumOrNull(row[cols.cApt3_5]),
+    apt6_10:toNumOrNull(row[cols.cApt6_10]), apt11up:toNumOrNull(row[cols.cApt11up])
+  };
+}
+function findAreaColumns(headerRow){
+  const colIndex=buildAreaColumnFinder(headerRow);
+  // 「小地域コード」（jSTAT MAP経由）と「コード」（e-Statの地域統計から直接CSVを落とした場合）の両方の表記に対応
+  const cCode=colIndex(['小地域コード','コード']);
+  return{
+    cCode,
+    cTotal:colIndex(['主世帯数']),
+    cDetached:colIndex(['一戸建']),
+    cRow:colIndex(['長屋建']),
+    cApt:colIndex(['共同住宅']),
+    cApt1_2:colIndex(['共同住宅１・２階建','共同住宅1・2階建']),
+    cApt3_5:colIndex(['共同住宅３～５階建','共同住宅3～5階建']),
+    cApt6_10:colIndex(['共同住宅６～１０階建','共同住宅6～10階建']),
+    cApt11up:colIndex(['共同住宅１１階建以上','共同住宅11階建以上'])
+  };
+}
+
+// ── CSV（e-Statの地域統計から直接ダウンロードした場合。Shift-JIS/UTF-8いずれも自動判定）──
+function parseCsvLine(line){
+  // ダブルクオート囲み・カンマ区切りの簡易CSVパーサ
+  const result=[];let cur='';let inQuotes=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(inQuotes){
+      if(c==='"'){
+        if(line[i+1]==='"'){cur+='"';i++;}else{inQuotes=false;}
+      }else cur+=c;
+    }else{
+      if(c==='"')inQuotes=true;
+      else if(c===','){result.push(cur);cur='';}
+      else cur+=c;
+    }
+  }
+  result.push(cur);
+  return result;
+}
+async function _doHandleAreaCsv(file){
+  try{
+    const buf=await file.arrayBuffer();
+    const bytes=new Uint8Array(buf);
+    // UTF-8 BOMがあればUTF-8、無ければ日本の統計サイトで一般的なShift-JISとして読む
+    const hasBom=bytes[0]===0xEF&&bytes[1]===0xBB&&bytes[2]===0xBF;
+    let text;
+    try{
+      text=new TextDecoder(hasBom?'utf-8':'shift_jis').decode(buf);
+    }catch(e){
+      text=new TextDecoder('utf-8').decode(buf); // shift_jisデコーダ非対応環境へのフォールバック
+    }
+    const lines=text.split(/\r\n|\n|\r/).filter(l=>l.length>0);
+    if(!lines.length){showToast('CSVが空です','err');return;}
+
+    let headerRow=null, headerRowIdx=-1;
+    for(let i=0;i<lines.length;i++){
+      const vals=parseCsvLine(lines[i]).map(v=>v.trim());
+      if(vals.some(v=>v==='コード'||v.includes('小地域コード'))&&vals.some(v=>v.includes('主世帯数'))){
+        headerRow=vals; headerRowIdx=i; break;
+      }
+    }
+    if(!headerRow){showToast('見出し行（コード／主世帯数）が見つかりません','err');return;}
+    const cols=findAreaColumns(headerRow);
+    if(cols.cCode<0){showToast('コード列が見つかりません','err');return;}
+
+    const data={};
+    let count=0;
+    for(let i=headerRowIdx+1;i<lines.length;i++){
+      const row=parseCsvLine(lines[i]).map(v=>v.trim());
+      const code=normalizeAreaCode(row[cols.cCode]);
+      if(!/^\d{11}$/.test(code))continue;
+      data[code]=buildAreaRecord(row,cols);
+      count++;
+    }
+    areaExcelData=data;
+    areaExcelLabel=file.name;
+    refreshAreaColorsAndInfo();
+    const matched=kmlAreas.filter(a=>lookupExcelArea(a.keyCode)).length;
+    showToast(`CSV読込完了（${count}件／境界${matched}件と一致）`,'ok');
+  }catch(err){
+    console.error(err);
+    showToast('CSV読込に失敗しました','err');
+  }
 }
 
 async function _doHandleAreaExcel(file){
@@ -1180,69 +1301,31 @@ async function _doHandleAreaExcel(file){
     const wb=new ExcelJS.Workbook();
     await wb.xlsx.load(buf);
 
-    // 「小地域コード」を含む見出し行をシート横断で探索（シート・行位置が変わっても壊れない設計）
+    // 「小地域コード」または「コード」を含む見出し行をシート横断で探索（シート・行位置が変わっても壊れない設計）
     let headerRow=null, headerRowIdx=null, sheetHit=null;
     outer:
     for(const ws of wb.worksheets){
       for(let r=1;r<=ws.rowCount;r++){
         const row=ws.getRow(r);
         const vals=row.values.map(v=>(v==null?'':String(v).trim()));
-        if(vals.some(v=>v.includes('小地域コード'))){
+        if(vals.some(v=>v==='コード'||v.includes('小地域コード'))&&vals.some(v=>v.includes('主世帯数'))){
           headerRow=vals; headerRowIdx=r; sheetHit=ws;
           break outer;
         }
       }
     }
-    if(!sheetHit){showToast('「小地域コード」列が見つかりません','err');return;}
+    if(!sheetHit){showToast('見出し行（コード／主世帯数）が見つかりません','err');return;}
 
-    // 見出し文字列から列番号を特定（列順が変わっても対応できるよう名前で探索）
-    const colIndex=(labelList)=>{
-      for(let i=0;i<headerRow.length;i++){
-        const v=headerRow[i];
-        if(v&&labelList.some(l=>v.includes(l)))return i;
-      }
-      return -1;
-    };
-    const cCode=colIndex(['小地域コード']);
-    const cTotal=colIndex(['主世帯数']);
-    const cDetached=colIndex(['一戸建']);
-    const cRow=colIndex(['長屋建']);
-    const cApt=colIndex(['共同住宅']);
-    const cApt1_2=colIndex(['共同住宅１・２階建','共同住宅1・2階建']);
-    const cApt3_5=colIndex(['共同住宅３～５階建','共同住宅3～5階建']);
-    const cApt6_10=colIndex(['共同住宅６～１０階建','共同住宅6～10階建']);
-    const cApt11up=colIndex(['共同住宅１１階建以上','共同住宅11階建以上']);
-    if(cCode<0){showToast('「小地域コード」列が見つかりません','err');return;}
-
-    const toNum=(v)=>{
-      if(v===undefined||v===null||v==='')return null;
-      const n=Number(String(v).replace(/,/g,''));
-      return isNaN(n)?null:n;
-    };
-    // 小地域コードは「必ず文字列」として扱う。数値化されてゼロ落ちしている場合は11桁ゼロ埋めで復元する
-    const normalizeCode=(v)=>{
-      if(v===undefined||v===null||v==='')return '';
-      let s=String(v).trim();
-      if(/^\d+$/.test(s)&&s.length<11)s=s.padStart(11,'0');
-      return s;
-    };
+    const cols=findAreaColumns(headerRow);
+    if(cols.cCode<0){showToast('コード列が見つかりません','err');return;}
 
     const data={};
     let count=0;
     for(let r=headerRowIdx+1;r<=sheetHit.rowCount;r++){
       const row=sheetHit.getRow(r).values;
-      const code=normalizeCode(row[cCode]);
+      const code=normalizeAreaCode(row[cols.cCode]);
       if(!/^\d{11}$/.test(code))continue; // 見出し以外の説明行・空行を除外
-      data[code]={
-        total:toNum(row[cTotal]),
-        detached:toNum(row[cDetached]),
-        row:toNum(row[cRow]),
-        apartment:toNum(row[cApt]),
-        apt1_2:toNum(row[cApt1_2]),
-        apt3_5:toNum(row[cApt3_5]),
-        apt6_10:toNum(row[cApt6_10]),
-        apt11up:toNum(row[cApt11up])
-      };
+      data[code]=buildAreaRecord(row,cols);
       count++;
     }
 

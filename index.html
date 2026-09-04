@@ -1424,7 +1424,9 @@ function buildAreaColumnFinder(headerRow){
 function normalizeAreaCode(v){
   if(v===undefined||v===null||v==='')return '';
   let s=String(v).trim();
-  if(/^\d+$/.test(s)&&s.length<11)s=s.padStart(11,'0');
+  // 数値化されて先頭ゼロが1桁だけ落ちるケース（都道府県コード「01」＝北海道など）にのみ限定して補う。
+  // 5桁・9桁など明らかに短いコードは、市区町村・町丁目単位の集計行を表す別物なので、ここでは伸ばさない。
+  if(/^\d{10}$/.test(s))s='0'+s;
   return s;
 }
 function toNumOrNull(v){
@@ -1442,8 +1444,9 @@ function buildAreaRecord(row,cols){
 }
 function findAreaColumns(headerRow){
   const colIndex=buildAreaColumnFinder(headerRow);
-  // 「小地域コード」（jSTAT MAP経由）と「コード」（e-Statの地域統計から直接CSVを落とした場合）の両方の表記に対応
-  const cCode=colIndex(['小地域コード','コード']);
+  // 「小地域コード」（jSTAT MAP経由）、「コード」（e-Statの地域統計から直接CSVを落とした場合）、
+  // 「KEY_CODE」（e-Statの都道府県単位・生データ形式）の3パターンに対応
+  const cCode=colIndex(['小地域コード','コード','KEY_CODE']);
   return{
     cCode,
     cTotal:colIndex(['主世帯数']),
@@ -1455,6 +1458,20 @@ function findAreaColumns(headerRow){
     cApt6_10:colIndex(['共同住宅６～１０階建','共同住宅6～10階建']),
     cApt11up:colIndex(['共同住宅１１階建以上','共同住宅11階建以上'])
   };
+}
+// e-Statの都道府県単位の生データは、1行目が英語のコード名（KEY_CODE, T001086001...）、
+// 2行目が日本語ラベル（主世帯数, 一戸建...）という2行に分かれた見出しになっていることがある。
+// 列位置で2行を合成し、通常の1行見出しと同じように扱えるようにする。
+function findTwoLineHeader(getRowVals,rowCount){
+  for(let i=0;i<rowCount-1;i++){
+    const row1=getRowVals(i);
+    if(row1.some(v=>(v||'').toUpperCase().trim()==='KEY_CODE')){
+      const row2=getRowVals(i+1);
+      const merged=row1.map((v,idx)=>row2[idx]?row2[idx]:v);
+      return{headerRow:merged,headerRowIdx:i+1};
+    }
+  }
+  return null;
 }
 
 // ── CSV（e-Statの地域統計から直接ダウンロードした場合。Shift-JIS/UTF-8いずれも自動判定）──
@@ -1498,6 +1515,10 @@ async function _doHandleAreaCsv(file){
         headerRow=vals; headerRowIdx=i; break;
       }
     }
+    if(!headerRow){
+      const twoLine=findTwoLineHeader(i=>parseCsvLine(lines[i]).map(v=>v.trim()),lines.length);
+      if(twoLine){headerRow=twoLine.headerRow;headerRowIdx=twoLine.headerRowIdx;}
+    }
     if(!headerRow){showToast('見出し行（コード／主世帯数）が見つかりません','err');return;}
     const cols=findAreaColumns(headerRow);
     if(cols.cCode<0){showToast('コード列が見つかりません','err');return;}
@@ -1507,7 +1528,7 @@ async function _doHandleAreaCsv(file){
     for(let i=headerRowIdx+1;i<lines.length;i++){
       const row=parseCsvLine(lines[i]).map(v=>v.trim());
       const code=normalizeAreaCode(row[cols.cCode]);
-      if(!/^\d{11}$/.test(code))continue;
+      if(!/^\d{11}$/.test(code))continue; // 市・町単位の集計行（5桁・9桁）は除外し、丁目単位（11桁）だけを採用
       data[code]=buildAreaRecord(row,cols);
       count++;
     }
@@ -1540,6 +1561,17 @@ async function _doHandleAreaExcel(file){
           headerRow=vals; headerRowIdx=r; sheetHit=ws;
           break outer;
         }
+      }
+    }
+    if(!sheetHit){
+      // 2行に分かれた見出し形式（e-Statの都道府県単位・生データ形式）にも対応
+      outer2:
+      for(const ws of wb.worksheets){
+        const twoLine=findTwoLineHeader(
+          r=>ws.getRow(r+1).values.map(v=>(v==null?'':String(v).trim())),
+          ws.rowCount
+        );
+        if(twoLine){headerRow=twoLine.headerRow;headerRowIdx=twoLine.headerRowIdx+1;sheetHit=ws;break outer2;}
       }
     }
     if(!sheetHit){showToast('見出し行（コード／主世帯数）が見つかりません','err');return;}

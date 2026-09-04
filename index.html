@@ -163,7 +163,8 @@
       </button>
       <input type="file" id="photoInput" multiple accept="image/jpeg,image/jpg" style="display:none" onchange="handlePhotos(this.files)"/>
       <input type="file" id="kmlInput" accept=".kml,.kmz" style="display:none" onchange="handleKML(this.files[0])"/>
-      <input type="file" id="areaExcelInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleAreaExcel(this.files[0])"/>
+      <input type="file" id="areaExcelInput" accept=".xlsx,.xls" style="display:none" onchange="handleAreaExcel(this.files[0])"/>
+      <input type="file" id="areaCsvInput" accept=".csv,.txt" style="display:none" onchange="handleAreaExcel(this.files[0])"/>
       <input type="file" id="achievementImportInput" accept=".json" style="display:none" onchange="handleImportAchievement(this.files[0])"/>
     </div>
     <!-- ▼テスト版ラベル（正式リリース時はこのdiv1つを削除するだけでOK） -->
@@ -175,6 +176,7 @@
         <div class="tb-dropdown">
           <div class="tb-dd-item" onclick="document.getElementById('kmlInput').click()"><svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;flex-shrink:0;"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2H3z"/><path d="M3 7l1.5 11A2 2 0 0 0 6.5 20h11a2 2 0 0 0 2-2L21 9H3"/></svg> KML/KMZを読み込む（境界線）</div>
           <div class="tb-dd-item" onclick="document.getElementById('areaExcelInput').click()"><svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;flex-shrink:0;"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/></svg> 世帯データ（Excel）を読み込む</div>
+          <div class="tb-dd-item" onclick="document.getElementById('areaCsvInput').click()"><svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;flex-shrink:0;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="10" y1="12" x2="14" y2="12"/><line x1="10" y1="16" x2="14" y2="16"/></svg> 世帯データ（CSV）を読み込む</div>
           <div class="tb-dd-item" onclick="openOrderModal()"><svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;flex-shrink:0;"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> 受注案件・配布計画を管理</div>
           <div class="tb-dd-item" onclick="toggleAddProhibitedMode()"><svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;flex-shrink:0;"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg> 配達禁止・苦情マーカーを地図で追加</div>
           <div class="tb-dd-sep"></div>

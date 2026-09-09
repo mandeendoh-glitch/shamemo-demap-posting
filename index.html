@@ -22,6 +22,21 @@
   html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;}
   #app{display:flex;flex-direction:column;height:100vh;}
   #topbar{height:54px;flex-shrink:0;background:#FFFFFF;border-bottom:1px solid var(--border);display:flex;align-items:center;position:relative;z-index:1000;}
+
+  /* ── スポットライトモード：SNS等から地点リンクで開いた際、PC向け管理UIを隠しスマホでも見やすくする ── */
+  body.spotlight-mode #topbar,body.spotlight-mode #right,body.spotlight-mode #coords-bar,body.spotlight-mode #dev-version-tag{display:none!important;}
+  body.spotlight-mode #map-wrap{width:100%!important;}
+  #spotlight-badge{
+    display:none;position:fixed;left:12px;right:12px;bottom:14px;z-index:1500;
+    background:#fff;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.22);
+    padding:12px 14px;align-items:center;gap:10px;text-decoration:none;color:#1A1E26;font-family:var(--font);
+  }
+  body.spotlight-mode #spotlight-badge{display:flex;}
+  #spotlight-badge .sb-icon{width:36px;height:36px;border-radius:9px;background:var(--accent);flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;}
+  #spotlight-badge .sb-text{flex:1;min-width:0;}
+  #spotlight-badge .sb-title{font-size:12.5px;font-weight:800;}
+  #spotlight-badge .sb-sub{font-size:10.5px;color:var(--dim);margin-top:1px;}
+  #spotlight-badge .sb-arrow{font-size:16px;color:var(--dim2);flex-shrink:0;}
   .tb-logo{display:flex;align-items:center;padding:0 16px;height:100%;white-space:nowrap;}
   .tb-logo img{height:44px;width:auto;display:block;}
   .tb-menu{display:flex;height:100%;position:relative;align-items:center;flex-shrink:0;}
@@ -90,6 +105,22 @@
   .mt-btn:hover:not(.active){background:white;color:var(--text);}
   #coords-bar{position:absolute;bottom:0;left:0;right:0;height:22px;background:rgba(245,240,232,.92);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 10px;gap:16px;font-size:10px;color:var(--dim);font-family:var(--mono);z-index:50;}
   #right{width:225px;flex-shrink:0;background:var(--panel2);display:flex;flex-direction:column;overflow:hidden;}
+  #right-toggle{display:none;}
+
+  /* ── スマホ幅ではサイドバー（写真リスト）を既定で折りたたみ、地図をフル幅にする ── */
+  @media (max-width:700px){
+    #right{position:fixed;top:54px;right:0;bottom:0;width:82vw;max-width:320px;z-index:900;
+      box-shadow:-4px 0 20px rgba(0,0,0,.25);transform:translateX(100%);transition:transform .22s ease;}
+    #right.open{transform:translateX(0);}
+    #right-toggle{
+      display:flex;position:fixed;right:12px;bottom:14px;z-index:901;
+      width:44px;height:44px;border-radius:50%;background:var(--accent);color:#fff;
+      align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 14px rgba(0,0,0,.3);border:none;
+    }
+    #right-toggle .count-badge{position:absolute;top:-4px;right:-4px;background:var(--orange);color:#fff;font-size:9px;font-weight:800;border-radius:8px;padding:1px 5px;min-width:14px;text-align:center;}
+    /* 上部メニューも画面外に隠れて操作不能にならないよう、横スクロールで辿り着けるようにする */
+    #topbar{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  }
   #list-header{height:40px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:11px;font-weight:700;color:var(--dim);letter-spacing:.04em;text-transform:uppercase;}
   #list-count{font-size:10px;color:var(--dim2);font-weight:400;}
   #photo-list{flex:1;overflow-y:auto;background:var(--panel2);padding:8px;}
@@ -286,6 +317,14 @@
       </div>
       <div id="map"></div>
       <div id="drop-overlay"><span>ここにドロップ</span></div>
+      <a id="spotlight-badge" href="javascript:void(0)" onclick="location.href=location.pathname">
+        <div class="sb-icon">📷</div>
+        <div class="sb-text">
+          <div class="sb-title">写メモdeMAP</div>
+          <div class="sb-sub">撮るだけで、位置とメモを自動整理。アプリを見る →</div>
+        </div>
+        <div class="sb-arrow">›</div>
+      </a>
       <div id="progress">
         <div id="prog-text">処理中...</div>
         <div id="prog-bar-wrap"><div id="prog-bar"></div></div>
@@ -312,6 +351,7 @@
       </div>
       <div id="photo-list"></div>
     </div>
+    <button id="right-toggle" onclick="toggleRightPanel()">📷<span class="count-badge" id="right-toggle-count" style="display:none;">0</span></button>
   </div>
 </div>
 <div id="project-modal">
@@ -650,6 +690,30 @@ function computeArrowDist(lat,zoom){
 }
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
+// SNS投稿等のリンクから ?lat=...&lng=...&title=...&desc=...&zoom=... を受け取り、
+// その地点にジャンプしてピン＋説明の吹き出しを開いた状態で表示する（アプリの宣伝用リンク機能）
+function applySpotlightFromUrl(){
+  const params=new URLSearchParams(location.search);
+  const lat=parseFloat(params.get('lat'));
+  const lng=parseFloat(params.get('lng'));
+  if(isNaN(lat)||isNaN(lng))return;
+  const zoom=parseInt(params.get('zoom'),10)||17;
+  const title=params.get('title')||'この場所';
+  const desc=params.get('desc')||'';
+  document.body.classList.add('spotlight-mode'); // PC向け管理UIを隠し、スマホでも見やすいシンプル表示に切り替える
+  map.setCenter({lat,lng});
+  map.setZoom(zoom);
+  const marker=new google.maps.Marker({
+    position:{lat,lng}, map,
+    icon:{path:google.maps.SymbolPath.CIRCLE,scale:12,fillColor:'#C06010',fillOpacity:1,strokeColor:'#fff',strokeWeight:3},
+    animation:google.maps.Animation.DROP, zIndex:20
+  });
+  const iw=new google.maps.InfoWindow({content:`<div style="background:#fff;color:#1A1E26;padding:12px 16px;border-radius:8px;max-width:260px;font-family:sans-serif;border-left:4px solid #C06010;"><div style="font-weight:800;font-size:14px;margin-bottom:5px;">📍 ${esc(title)}</div><div style="font-size:12px;color:#4A4238;line-height:1.6;">${esc(desc)}</div><div style="font-size:10px;color:#9AAABB;margin-top:8px;">写メモdeMAPで表示中</div></div>`});
+  iw.open(map,marker);
+  if(activeIW)activeIW.close();
+  activeIW=iw;
+}
+
 function loadMap(){
   if(map)return Promise.resolve();
   if(loadMap._pending)return loadMap._pending;
@@ -671,6 +735,7 @@ function loadMap(){
       loadProhibitedMarkersMaster();
       renderProhibitedMarkersOnMap();
       restoreKmlAreasFromStorage();
+      applySpotlightFromUrl(); // SNS投稿等からのリンクで、特定地点へジャンプ＋説明を表示する
       resolve();
     };
     const s=document.createElement('script');s.id='_gm';
@@ -2161,7 +2226,17 @@ function focusPhoto(idx){
 }
 function highlightItem(idx){document.querySelectorAll('.list-item').forEach(el=>el.classList.remove('active'));const el=document.querySelector(`.list-item[data-idx="${idx}"]`);if(el){el.classList.add('active');el.scrollIntoView({block:'nearest'});}}
 function setPreview(photo){ /* プレビューパネルは廃止。地図ポップアップに一本化したため何もしない */ }
-function updateStats(){document.getElementById('stat-photos').textContent=photos.length;document.getElementById('stat-gps').textContent=photos.filter(p=>p.exif?.lat!==null).length;document.getElementById('stat-memo').textContent=memos.length;}
+function updateStats(){
+  document.getElementById('stat-photos').textContent=photos.length;
+  document.getElementById('stat-gps').textContent=photos.filter(p=>p.exif?.lat!==null).length;
+  document.getElementById('stat-memo').textContent=memos.length;
+  const badge=document.getElementById('right-toggle-count');
+  if(badge){badge.textContent=photos.length;badge.style.display=photos.length>0?'block':'none';}
+}
+// スマホ幅で折りたたまれている写真リストパネルの開閉（PC幅では常時表示のため実質無効）
+function toggleRightPanel(){
+  document.getElementById('right').classList.toggle('open');
+}
 function applyFilter(){renderList();}
 
 // KML等の「表示ラベル」用に、ファイル名ではなく人が読みやすい短い文言を作る

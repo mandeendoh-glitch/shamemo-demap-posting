@@ -118,8 +118,13 @@
       align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 14px rgba(0,0,0,.3);border:none;
     }
     #right-toggle .count-badge{position:absolute;top:-4px;right:-4px;background:var(--orange);color:#fff;font-size:9px;font-weight:800;border-radius:8px;padding:1px 5px;min-width:14px;text-align:center;}
-    /* 上部メニューも画面外に隠れて操作不能にならないよう、横スクロールで辿り着けるようにする */
-    #topbar{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+    /* 上部メニューは横スクロールではなく、折り返して複数行に収め、常時すべて見える状態にする */
+    #topbar{flex-wrap:wrap;height:auto;min-height:44px;padding:4px 6px;row-gap:2px;}
+    .tb-menu{height:auto;flex-wrap:wrap;row-gap:2px;}
+    .tb-item{height:auto;padding:4px 8px;}
+    .tb-dropdown{top:100%;} /* 折り返しで各項目の縦位置が変わるため、固定値ではなく相対位置に */
+    .tb-logo{height:auto;padding:2px 8px;}
+    .tb-logo img{height:32px;}
   }
   #list-header{height:40px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:11px;font-weight:700;color:var(--dim);letter-spacing:.04em;text-transform:uppercase;}
   #list-count{font-size:10px;color:var(--dim2);font-weight:400;}

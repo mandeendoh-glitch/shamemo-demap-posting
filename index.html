@@ -217,6 +217,7 @@
         <span class="tb-item-label" onclick="event.stopPropagation();toggleMenu(this.parentElement)">ファイル</span>
         <div class="tb-dropdown">
           <div class="tb-dd-item" onclick="openAreaCatalogModal()" style="background:#E8F5E9;"><svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;flex-shrink:0;color:var(--green);"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> エリアデータを選ぶ（かんたん・おすすめ）</div>
+          <div class="tb-dd-item" onclick="importAreaStatsFromApi()" style="background:#E3F2FD;"><svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;flex-shrink:0;color:var(--accent);"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg> 世帯データをe-Stat APIで自動取得（開発者用・実験的）</div>
           <div class="tb-dd-sep"></div>
           <div class="tb-dd-item" onclick="document.getElementById('kmlInput').click()"><svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;flex-shrink:0;"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2H3z"/><path d="M3 7l1.5 11A2 2 0 0 0 6.5 20h11a2 2 0 0 0 2-2L21 9H3"/></svg> KML/KMZを読み込む（境界線）</div>
           <div class="tb-dd-item" onclick="document.getElementById('areaExcelInput').click()"><svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;flex-shrink:0;"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/></svg> 世帯データ（Excel）を読み込む</div>
@@ -1395,7 +1396,7 @@ function resetKmlAreaData(){
 const AREA_CATALOG_INDEX_URL='https://raw.githubusercontent.com/mandeendoh-glitch/shamemo-area-data/main/areas_index.json';
 
 // 【開発側専用】今読み込んでいる境界＋世帯データを、カタログ配布用の1ファイルにまとめて書き出す
-function exportAreaDataPackage(){
+async function exportAreaDataPackage(){
   if(!kmlAreas.length){showToast('書き出すエリアデータがありません','err');return;}
   const serialized=kmlAreas.map(a=>{
     const paths=[];
@@ -1409,19 +1410,38 @@ function exportAreaDataPackage(){
   const label=prompt('エリア名（例：東京都大田区）を確認・修正してください',guessedLabel);
   if(label===null)return;
 
+  const updatedAt=new Date().toISOString();
   const pkg={
     formatVersion:1, code, label,
     areas:serialized, excelData:areaExcelData||null, excelLabel:areaExcelLabel||'',
-    updatedAt:new Date().toISOString()
+    updatedAt
   };
-  const blob=new Blob([JSON.stringify(pkg,null,2)],{type:'application/json'});
+  downloadJsonFile(`area_${code}.json`,pkg);
+
+  // 目次ファイル（areas_index.json）も、既存の内容に今回のエリアを追加・更新した状態で自動生成する。
+  // これにより、利用者は目次のJSONを手で編集する必要がなく、2つのファイルをアップロードするだけで済む。
+  let index={areas:[]};
+  try{
+    const res=await fetch(AREA_CATALOG_INDEX_URL,{cache:'no-store'});
+    if(res.ok)index=await res.json();
+  }catch(e){/* 目次がまだ存在しない場合は空の目次から始める */}
+  index.areas=index.areas||[];
+  const fileUrl=AREA_CATALOG_INDEX_URL.replace('areas_index.json',`areas/area_${code}.json`);
+  const existingIdx=index.areas.findIndex(a=>a.code===code);
+  const entry={code,label,fileUrl,updatedAt};
+  if(existingIdx>=0)index.areas[existingIdx]=entry;else index.areas.push(entry);
+  downloadJsonFile('areas_index.json',index);
+
+  showToast(`2つのファイルを書き出しました（area_${code}.json と areas_index.json）。両方をデータ置き場にアップロードしてください`,'ok');
+}
+function downloadJsonFile(filename,obj){
+  const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
   a.href=url;
-  a.download=`area_${code}.json`;
+  a.download=filename;
   a.click();
   URL.revokeObjectURL(url);
-  showToast(`エリアデータを書き出しました（area_${code}.json）。データ置き場にアップロードしてください`,'ok');
 }
 
 let areaCatalogList=[];
@@ -1621,6 +1641,105 @@ function buildAreaRecord(row,cols){
     apt6_10:toNumOrNull(row[cols.cApt6_10]), apt11up:toNumOrNull(row[cols.cApt11up])
   };
 }
+// ══════════════════════════════════════════════════════════════
+// e-Stat APIから世帯データ（住宅の建て方別世帯数）を自動取得する機能
+// これまでのExcel/CSVダウンロード＆アップロードという手作業を置き換える
+// ══════════════════════════════════════════════════════════════
+const ESTAT_APP_ID='968402f5374674a3447f081bf1f289f96e6d1a50';
+const ESTAT_API_BASE='https://api.e-stat.go.jp/rest/3.0/app/json';
+const PREF_CODE_NAME={'01':'北海道','02':'青森県','03':'岩手県','04':'宮城県','05':'秋田県','06':'山形県','07':'福島県','08':'茨城県','09':'栃木県','10':'群馬県','11':'埼玉県','12':'千葉県','13':'東京都','14':'神奈川県','15':'新潟県','16':'富山県','17':'石川県','18':'福井県','19':'山梨県','20':'長野県','21':'岐阜県','22':'静岡県','23':'愛知県','24':'三重県','25':'滋賀県','26':'京都府','27':'大阪府','28':'兵庫県','29':'奈良県','30':'和歌山県','31':'鳥取県','32':'島根県','33':'岡山県','34':'広島県','35':'山口県','36':'徳島県','37':'香川県','38':'愛媛県','39':'高知県','40':'福岡県','41':'佐賀県','42':'長崎県','43':'熊本県','44':'大分県','45':'宮崎県','46':'鹿児島県','47':'沖縄県'};
+
+async function fetchAreaStatsFromEstatApi(cityCode){
+  if(!/^\d{5}$/.test(cityCode)){showToast('市区町村コードは5桁で入力してください','err');return null;}
+  const prefCode=cityCode.slice(0,2);
+  const prefName=PREF_CODE_NAME[prefCode];
+  if(!prefName){showToast('都道府県コードが不正です','err');return null;}
+
+  // ①統計表情報取得：小地域(searchKind=2)・国勢調査(statsCode=00200521)の中から、
+  // 「住宅の建て方別」かつ対象都道府県の表を探す
+  showToast('①該当する統計表を検索中...','ok');
+  const listUrl=`${ESTAT_API_BASE}/getStatsList?appId=${ESTAT_APP_ID}&statsCode=00200521&searchKind=2&searchWord=${encodeURIComponent('住宅の建て方')}`;
+  const listRes=await fetch(listUrl);
+  const listData=await listRes.json();
+  const listRoot=listData.GET_STATS_LIST;
+  if(!listRoot||listRoot.RESULT.STATUS!==0){throw new Error('統計表情報の取得に失敗：'+(listRoot?.RESULT?.ERROR_MSG||'不明なエラー'));}
+  let tables=listRoot.DATALIST_INF.TABLE_INF;
+  if(!Array.isArray(tables))tables=[tables].filter(Boolean);
+  const target=tables.find(t=>{
+    const title=(t.TITLE?.$||t.TITLE||'')+'';
+    const statName=(t.STATISTICS_NAME||'')+'';
+    return title.includes('住宅の建て方')&&(title.includes(prefName)||statName.includes(prefName));
+  });
+  if(!target){throw new Error(`「${prefName}」の住宅の建て方別世帯数の統計表が見つかりませんでした`);}
+  const statsDataId=target['@id'];
+
+  // ②メタ情報取得：分類コード（一戸建・共同住宅等）の対応表を作る
+  showToast('②分類情報を取得中...','ok');
+  const metaUrl=`${ESTAT_API_BASE}/getMetaInfo?appId=${ESTAT_APP_ID}&statsDataId=${statsDataId}`;
+  const metaRes=await fetch(metaUrl);
+  const metaData=await metaRes.json();
+  const metaRoot=metaData.GET_META_INFO;
+  if(!metaRoot||metaRoot.RESULT.STATUS!==0){throw new Error('メタ情報の取得に失敗：'+(metaRoot?.RESULT?.ERROR_MSG||'不明なエラー'));}
+  let classObjs=metaRoot.METADATA_INF.CLASS_INF.CLASS_OBJ;
+  if(!Array.isArray(classObjs))classObjs=[classObjs].filter(Boolean);
+  const catObj=classObjs.find(c=>(c['@name']||'').includes('表章')||c['@id']==='cat01');
+  let catClasses=catObj?catObj.CLASS:[];
+  if(!Array.isArray(catClasses))catClasses=[catClasses].filter(Boolean);
+  const findCatCode=(labelList)=>{
+    const hit=catClasses.find(c=>labelList.some(l=>(c['@name']||'').includes(l)));
+    return hit?hit['@code']:null;
+  };
+  const catCodes={
+    total:findCatCode(['主世帯数','総数']), detached:findCatCode(['一戸建']), row:findCatCode(['長屋建']),
+    apartment:findCatCode(['共同住宅'])&&!findCatCode(['共同住宅１','共同住宅1'])?findCatCode(['共同住宅']):findCatCode(['共同住宅']),
+  };
+
+  // ③統計データ取得：対象都道府県内の全小地域データを取得し、指定した市区町村コードで始まるものだけ抽出
+  showToast('③世帯データを取得中...','ok');
+  const dataUrl=`${ESTAT_API_BASE}/getStatsData?appId=${ESTAT_APP_ID}&statsDataId=${statsDataId}`;
+  const dataRes=await fetch(dataUrl);
+  const dataJson=await dataRes.json();
+  const dataRoot=dataJson.GET_STATS_DATA;
+  if(!dataRoot||dataRoot.RESULT.STATUS!==0){throw new Error('統計データの取得に失敗：'+(dataRoot?.RESULT?.ERROR_MSG||'不明なエラー'));}
+  let values=dataRoot.STATISTICAL_DATA.DATA_INF.VALUE;
+  if(!Array.isArray(values))values=[values].filter(Boolean);
+
+  const data={};
+  values.forEach(v=>{
+    const areaCode=v['@area'];
+    if(!areaCode||!areaCode.startsWith(cityCode))return;
+    const code=normalizeAreaCode(areaCode);
+    if(!/^\d{11}$/.test(code))return;
+    if(!data[code])data[code]={total:null,detached:null,row:null,apartment:null,apt1_2:null,apt3_5:null,apt6_10:null,apt11up:null};
+    const val=toNumOrNull(v['$']);
+    if(v['@cat01']===catCodes.total)data[code].total=val;
+    else if(v['@cat01']===catCodes.detached)data[code].detached=val;
+    else if(v['@cat01']===catCodes.row)data[code].row=val;
+    else if(v['@cat01']===catCodes.apartment)data[code].apartment=val;
+  });
+  return{data,label:`${prefName}（e-Stat API自動取得）`};
+}
+
+async function importAreaStatsFromApi(){
+  const guessedCode=kmlAreas.length?kmlAreas[0].keyCode.slice(0,5):'';
+  const cityCode=prompt('市区町村コード（5桁）を入力してください（例：大田区=13111）',guessedCode);
+  if(!cityCode)return;
+  try{
+    const result=await fetchAreaStatsFromEstatApi(cityCode.trim());
+    if(!result)return;
+    areaExcelData=result.data;
+    areaExcelLabel=result.label;
+    refreshAreaColorsAndInfo();
+    saveAreaExcelDataToStorage();
+    const matched=kmlAreas.filter(a=>lookupExcelArea(a.keyCode)).length;
+    const count=Object.keys(result.data).length;
+    showToast(`e-Stat APIから世帯データを取得しました（${count}件／境界${matched}件と一致）`,'ok');
+  }catch(err){
+    console.error(err);
+    showToast('e-Stat APIからの取得に失敗しました：'+err.message,'err');
+  }
+}
+
 function findAreaColumns(headerRow){
   const colIndex=buildAreaColumnFinder(headerRow);
   // 「小地域コード」（jSTAT MAP経由）、「コード」（e-Statの地域統計から直接CSVを落とした場合）、

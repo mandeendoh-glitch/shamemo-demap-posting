@@ -2066,19 +2066,30 @@ function renderOrderSelectionTotal(){
 function styleAreaForOrder(area){
   const orderModalOpen=document.getElementById('order-modal').classList.contains('show');
   const o=orders[currentOrderId];
+  const result=o&&o.areaResults&&o.areaResults[area.keyCode];
   const selected=orderModalOpen&&o&&(o.areaKeyCodes||[]).includes(area.keyCode);
+
+  // ── 配達完了エリアは、受注案件パネルの開閉や選択状態に関わらず、常に緑色で塗って一目でわかるようにする
+  //    （これまでは実績データを取り込んでも地図上の見た目が一切変わらず、管理者がどこが完了済みか
+  //      判別できなかったため追加）
+  if(result){
+    area.polygon.setOptions({strokeColor:'#1A8040',strokeWeight:2.5,fillColor:'#1A8040',fillOpacity:.55});
+    area.label.setLabel({text:String(result.completedCount.toLocaleString()),color:'#fff',fontSize:'12px',fontWeight:'800'});
+    return;
+  }
+
   if(orderModalOpen&&o){
     if(selected){
-      area.polygon.setOptions({strokeColor:'#1A8040',strokeWeight:3,fillOpacity:.55});
+      area.polygon.setOptions({strokeColor:'#1A8040',strokeWeight:3,fillColor:area.color,fillOpacity:.55});
       const count=o.plannedCounts?.[area.keyCode] ?? defaultPlannedCount(area);
       area.label.setLabel({text:String(count),color:'#1A8040',fontSize:'13px',fontWeight:'800'});
     }else{
-      area.polygon.setOptions({strokeColor:'#8080FF',strokeWeight:1.5,fillOpacity:.22});
+      area.polygon.setOptions({strokeColor:'#8080FF',strokeWeight:1.5,fillColor:area.color,fillOpacity:.22});
       const basis=lookupExcelArea(area.keyCode)?.total ?? area.setai;
       area.label.setLabel({text:basis!=null?String(basis):'—',color:'#6A7888',fontSize:'11px',fontWeight:'700'});
     }
   }else{
-    area.polygon.setOptions({strokeColor:'#8080FF',strokeWeight:1.5,fillOpacity:.45});
+    area.polygon.setOptions({strokeColor:'#8080FF',strokeWeight:1.5,fillColor:area.color,fillOpacity:.45});
     const basis=lookupExcelArea(area.keyCode)?.total ?? area.setai;
     area.label.setLabel({text:basis!=null?String(basis):'—',color:'#1A1E26',fontSize:'12px',fontWeight:'800'});
   }
@@ -2182,6 +2193,7 @@ async function handleImportAchievement(file){
     o.achievementPhotos=data.photos||[];
     o.routePoints=data.routePoints||[]; // 15秒間隔で記録された配達員の移動経路
     saveOrders();
+    refreshAllAreaMapStyles(); // 取り込んだ完了エリアを地図上に緑色で反映
 
     // 配達員が現地で追加した配達禁止・苦情マーカーを、エリア共通のマスタに合流させる
     loadProhibitedMarkersMaster();

@@ -239,6 +239,7 @@
           <div class="tb-dd-item" onclick="toggleLayer('arrows')">撮影方向 ON/OFF</div>
           <div class="tb-dd-item" onclick="toggleLayer('route')">作業動線 ON/OFF</div>
           <div class="tb-dd-item" onclick="toggleLayer('memos')">写メモVoice ON/OFF</div>
+          <div class="tb-dd-item" onclick="toggleAchievementPhotos()">配達実績の写真 ON/OFF</div>
           <div class="tb-dd-sep"></div>
           <div class="tb-dd-item" onclick="toggleLayer('boundary')">町丁目境界 ON/OFF</div>
         </div>
@@ -639,7 +640,8 @@ let kmlAreas=[], areaExcelData=null, areaExcelLabel='';
 let orders={}, currentOrderId=null;
 // ── 配達禁止・苦情マーカー（受注案件に属さない、エリア共通の永続データ）──
 let prohibitedMarkersMaster={}, prohibitedMarkerMapObjs=[], addProhibitedMode=false;
-let layers={photos:true,arrows:true,kml:true,memos:true,route:true,boundary:true};
+let layers={photos:true,arrows:true,kml:true,memos:true,route:true,boundary:true,achievementPhotos:true};
+let achievementPhotoMarkers=[]; // 配達員から届いた実績写真のピン（ドライブのサムネイルURLを使用）
 let editTargetIdx = null;
 
 function parseEXIF(buf){
@@ -761,6 +763,8 @@ function loadMap(){
       loadProhibitedMarkersMaster();
       renderProhibitedMarkersOnMap();
       restoreKmlAreasFromStorage();
+      loadOrders(); // 保存済みの受注案件（実績データ含む）を読み込む
+      renderAchievementPhotoMarkers(); // 取り込み済みの実績写真ピンを表示
       applySpotlightFromUrl(); // SNS投稿等からのリンクで、特定地点へジャンプ＋説明を表示する
       resolve();
     };
@@ -2194,6 +2198,7 @@ async function handleImportAchievement(file){
     o.routePoints=data.routePoints||[]; // 15秒間隔で記録された配達員の移動経路
     saveOrders();
     refreshAllAreaMapStyles(); // 取り込んだ完了エリアを地図上に緑色で反映
+    renderAchievementPhotoMarkers(); // 取り込んだ実績写真を地図上にピン表示
 
     // 配達員が現地で追加した配達禁止・苦情マーカーを、エリア共通のマスタに合流させる
     loadProhibitedMarkersMaster();
@@ -2261,6 +2266,39 @@ function renderProhibitedMarkersOnMap(){
     const iw=new google.maps.InfoWindow({content:`<div style="font-family:sans-serif;font-size:12px;max-width:200px;"><div style="font-weight:800;color:#C03030;">🚫 ${esc(pm.type)}</div><div style="margin-top:4px;">${esc(pm.memo||'（メモなし）')}</div><div style="margin-top:4px;font-size:10px;color:#9AAABB;">${esc((pm.createdAt||'').slice(0,10))}</div></div>`});
     marker.addListener('click',()=>{if(activeIW)activeIW.close();iw.open(map,marker);activeIW=iw;});
     prohibitedMarkerMapObjs.push({marker,iw,pm});
+  });
+}
+
+function toggleAchievementPhotos(){
+  layers.achievementPhotos=!layers.achievementPhotos;
+  renderAchievementPhotoMarkers();
+}
+
+// ── 配達員から届いた実績写真を、ドライブのサムネイルURLを使って地図上にピン表示する ──
+// （実績データ.json内のphotos[].driveUrlは、GAS側で写真をGoogleドライブへ保存した際に
+//   発行された「リンクを知っている人は閲覧可」のサムネイルURL）
+function renderAchievementPhotoMarkers(){
+  achievementPhotoMarkers.forEach(m=>{m.marker.setMap(null);m.iw.close();});
+  achievementPhotoMarkers=[];
+  if(!map||!layers.achievementPhotos)return;
+  Object.values(orders).forEach(o=>{
+    (o.achievementPhotos||[]).forEach(p=>{
+      if(p.lat==null||p.lng==null||!p.driveUrl)return;
+      const pos={lat:p.lat,lng:p.lng};
+      const marker=new google.maps.Marker({
+        position:pos,map:map,zIndex:15,title:p.memo||'配達実績写真',
+        icon:{url:p.driveUrl,scaledSize:new google.maps.Size(44,44),anchor:new google.maps.Point(22,22)}
+      });
+      const directUrl=p.driveUrl.replace('/thumbnail?id=','/file/d/')+'&sz=w1600';
+      const content=`<div style="max-width:220px;font-family:sans-serif;">
+        <img src="${p.driveUrl}&sz=w600" style="width:100%;border-radius:6px;margin-bottom:6px;cursor:zoom-in;display:block;" onclick="window.open('${esc(p.driveUrl)}','_blank')">
+        ${p.memo?`<div style="font-size:13px;font-weight:700;color:#1A1E26;white-space:pre-wrap;">${esc(p.memo)}</div>`:'<div style="font-size:11px;color:#9AAABB;">（メモなし）</div>'}
+        <div style="font-size:10px;color:#9AAABB;margin-top:4px;">${esc((p.time||'').slice(0,16).replace('T',' '))}</div>
+      </div>`;
+      const iw=new google.maps.InfoWindow({content});
+      marker.addListener('click',()=>{if(activeIW)activeIW.close();iw.open(map,marker);activeIW=iw;});
+      achievementPhotoMarkers.push({marker,iw});
+    });
   });
 }
 
